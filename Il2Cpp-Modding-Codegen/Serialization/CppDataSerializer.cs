@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Il2CppModdingCodegen.Serialization
 {
@@ -121,42 +122,26 @@ namespace Il2CppModdingCodegen.Serialization
             int currentPathLength = 0;
 
             var serializer = new CppSourceCreator(_config, _contextSerializer);
+
             foreach (var pair in _map)
             {
                 i++;
-                // We iterate over every type.
-                // Then, we check InPlace for each context object, and if it is InPlace, we don't write a header for it
-                // (we attempt to write a .cpp for it, if it is a template, this won't do anything)
-                // Also, types that have no declaring context are always written (otherwise we would have 0 types!)
-
-                if (_config.PrintSerializationProgress)
-                    if (i % _config.PrintSerializationProgressFrequency == 0)
-                        Console.WriteLine($"{i} / {count}");
-
-                // Ensure that we are going to write everything in this context:
-                // Global context should have everything now, all names are also resolved!
-                // Now, we create the folders/files for the particular type we would like to create
-                // Then, we write the includes
-                // Then, we write the forward declares
-                // Then, we write the actual file data (call header or cpp .Serialize on the stream)
-                // That's it!
-                // Now we serialize
+                if (_config.PrintSerializationProgress && i % _config.PrintSerializationProgressFrequency == 0)
+                    Console.WriteLine($"{i} / {count}");
 
                 if (!pair.Value.InPlace || pair.Value.DeclaringContext == null)
                     new CppHeaderCreator(_config, _contextSerializer).Serialize(pair.Value);
+
                 var t = pair.Value.LocalType;
-                if (/*t.Type == TypeEnum.Interface || */t.This.IsGeneric || (!t.Methods.Any() && !t.StaticFields.Any()))
-                    // Don't create C++ for types with no methods (including static fields), or if it is an interface, or if it is generic
+                if (t.This.IsGeneric || (!t.Methods.Any() && !t.StaticFields.Any()))
                     continue;
 
-                // We need to split up the files into multiple pieces, which all build to static libraries and then build to a single shared library
                 if (_config.MultipleLibraries)
                 {
-                    var name = _config.OutputSourceDirectory + "/" + pair.Value.CppFileName;
+                    var name = SanitizeFileName(_config.OutputSourceDirectory + "/" + pair.Value.CppFileName);
                     if (currentPathLength + name.Length >= _config.SourceFileCharacterLimit)
                     {
-                        // If we are about to go over, use the names list to create a library and add it to libs.
-                        var newLib = new AndroidMkSerializer.Library(_config.Id + "_" + i, true, names);
+                        var newLib = new AndroidMkSerializer.Library(SanitizeFileName(_config.Id + "_" + i), true, names);
                         mkSerializer.WriteStaticLibrary(newLib);
                         libs.Add(newLib);
                         currentPathLength = 0;
@@ -178,14 +163,11 @@ namespace Il2CppModdingCodegen.Serialization
                 CppStreamWriter.DeleteUnwrittenFiles();
             Console.WriteLine($"Copy constructor count: {CppMethodSerializer.CopyConstructorCount}.");
 
-            // After all static libraries are created, aggregate them all and collpase them into a single Android.mk file.
-            // As a double check, doing a ctrl-f for any given id in the Android.mk should net two results: Where it is created and where it is aggregated.
-            // Add one last lib for the final set of names to be built
             if (_config.MultipleLibraries)
             {
                 if (names.Count > 0)
                 {
-                    var newLib = new AndroidMkSerializer.Library(_config.Id + "_" + i, true, names);
+                    var newLib = new AndroidMkSerializer.Library(SanitizeFileName(_config.Id + "_" + i), true, names);
                     libs.Add(newLib);
                     mkSerializer.WriteStaticLibrary(newLib);
                 }
@@ -194,16 +176,21 @@ namespace Il2CppModdingCodegen.Serialization
             }
             else
             {
-                // Don't need to use modloader since this library is not a mod, it has no ModInfo that it uses!
-                // TODO: Configurable bs-hook version
                 mkSerializer.WritePrebuiltSharedLibrary("beatsaber-hook", "./extern/libbeatsaber-hook_0_7_4.so", "./extern/beatsaber-hook/shared/");
-                mkSerializer.WriteSingleFile(new AndroidMkSerializer.Library(_config.Id, false, new List<string> { "beatsaber-hook" }));
+                mkSerializer.WriteSingleFile(new AndroidMkSerializer.Library(SanitizeFileName(_config.Id), false, new List<string> { "beatsaber-hook" }));
             }
             mkSerializer.Close();
-            // Write the Application.mk after
+
             var appMkSerializer = new ApplicationMkSerializer();
             appMkSerializer.Write(Path.Combine(_config.OutputDirectory, "Application.mk"));
             appMkSerializer.Close();
+        }
+
+        private static string SanitizeFileName(string fileName)
+        {
+            var invalidChars = new string(Path.GetInvalidFileNameChars()) + new string(Path.GetInvalidPathChars());
+            var invalidCharsRegex = new Regex($"[{Regex.Escape(invalidChars)}]");
+            return invalidCharsRegex.Replace(fileName, "_");
         }
     }
 }

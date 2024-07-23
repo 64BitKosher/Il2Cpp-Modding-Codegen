@@ -13,6 +13,8 @@ namespace Il2CppModdingCodegen
     {
         private static HashSet<string>? illegalNames;
 
+        private static readonly Dictionary<string, MethodDefinition> SpecialBaseMethods = new Dictionary<string, MethodDefinition>();
+
         public static void Init(SerializationConfig cfg)
         {
             illegalNames = cfg.IllegalNames;
@@ -213,7 +215,14 @@ namespace Il2CppModdingCodegen
             if (iface is null)
                 return null;
             var tName = self.Name.Substring(idxDot + 1);
-            return iface.Resolve().Methods.Where(im => im.Name == tName && self.Parameters.Count == im.Parameters.Count).Single();
+            var key = $"{iface.FullName}.{tName}";
+            if (SpecialBaseMethods.TryGetValue(key, out var method))
+                return method;
+
+            method = iface.Resolve().Methods.FirstOrDefault(im => im.Name == tName && self.Parameters.Count == im.Parameters.Count);
+            if (method != null)
+                SpecialBaseMethods[key] = method;
+            return method;
         }
 
         /// <summary>
@@ -225,14 +234,17 @@ namespace Il2CppModdingCodegen
         internal static HashSet<MethodDefinition> GetBaseMethods(this MethodDefinition self)
         {
             if (self is null) throw new ArgumentNullException(nameof(self));
-            // Whenever we call GetBaseMethods, we should explicitly exclude all base methods that are specifically defined by self.DeclaringType via special names already.
-            // We would ideally do this by compiling a list of special named methods, and for each of those, explicitly excluding them from our matches.
-            // However, this means that we need to be able to convert a special name to a base method, which means we need an extension method for it here.
-            // TODO: This list should be generated once and then cached.
-            var specialBaseMethods = self.DeclaringType.Methods.Select(m => m.GetSpecialNameBaseMethod(out var iface)).Where(md => md != null);
+
+            var specialBaseMethods = self.DeclaringType.Methods
+                .Select(m => m.GetSpecialNameBaseMethod(out var iface))
+                .Where(md => md != null);
+
+            var specialBaseMethodNames = specialBaseMethods.Select(method => method!.FullName).ToList();
+
             var matches = self.FindIn(self.DeclaringType, self.DeclaringType.GetGenerics(self.DeclaringType.Resolve()));
-            foreach (var sbm in specialBaseMethods)
-                matches.Remove(sbm!);
+
+            matches = matches.Where(m => !specialBaseMethodNames.Contains(m.FullName)).ToHashSet();
+
             return matches;
         }
     }
